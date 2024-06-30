@@ -1,42 +1,34 @@
-import os
 import pandas as pd
 import torch
 
-os.environ["CUDA_VISIBLE_DEVICES"]=""
+# import custom modules
 from arg_parser_training import argParser
 from bert_model import RegressorBERT
-from datasets import Dataset
-from transformers import BertTokenizer
-from transformers import TrainingArguments, Trainer
+
+# import modules for defining the transformer model's components and training
+from math import ceil
+from transformers import BertTokenizer, BertConfig
+from transformers import TrainingArguments, Trainer, EarlyStoppingCallback
 from transformers import DataCollatorWithPadding
-from torch.nn.functional import mse_loss
-from transformers import get_linear_schedule_with_warmup
+from transformers import get_linear_schedule_with_warmup, set_seed
 from torch.optim import AdamW
+from torch.nn.functional import mse_loss, l1_loss
+from auxiliary_functions import rmse_loss
+from torch import nn
 
-# device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-def tokenize(x: str) -> dict:
-    return tokenizer(x["descrip"], max_length=512, truncation=True)
+# import modules for data processing and storage
+from auxiliary_functions import *
 
-def rmse_loss(input, target):
-    loss = mse_loss(input, target)
-    return torch.sqrt(loss)
-
-def test_model(sample_text: str, sample_price: int) -> dict:
-    tokens = tokenizer(sample_text, truncation=True, max_length=512, padding="longest", return_tensors="pt")
-    outputs = model(**tokens, price=[sample_price])
-
-    return outputs
-
-def create_dataset(pandas_df: pd.DataFrame, limit_size: int) -> Dataset:
-    dataset = Dataset.from_pandas(pandas_df[:limit_size])
-    dataset = dataset.map(tokenize, batched=True)
-    dataset = dataset.train_test_split(0.2, seed=42)
-    dataset = dataset.remove_columns("descrip")
-
-    return dataset
+# custom trainer to keep track of learning rate
+class customTrainer(Trainer):
+    def log(self, logs: dict[str, float]) -> None:
+        logs["learning_rate"] = self._get_learning_rate()
+        super().log(logs)
 
 loss_name_to_func = {
-    "rmse": rmse_loss
+    "rmse": rmse_loss,
+    "mse": mse_loss,
+    "l1": l1_loss
 }
 
 optimizer_name_to_func = {
@@ -44,7 +36,6 @@ optimizer_name_to_func = {
 }
 
 if __name__ == "__main__":
-    torch.manual_seed(42)
     arg_parser = argParser()
     args = arg_parser.arg_parser.parse_args()
 
@@ -55,41 +46,69 @@ if __name__ == "__main__":
 
     model_name = "google-bert/bert-base-multilingual-cased"
     tokenizer = BertTokenizer.from_pretrained(model_name, return_tensors="pt", truncation=True, max_length=512, padding="max_length")
-    model = RegressorBERT(model_name=model_name, hidden_layers=args.hidden, device=device, loss_func=loss_name_to_func[args.loss_func], aggregation_method=args.agg, dense_layers=args.dense)
+
+    # set seeds for consistent results using the same base model
+    torch.manual_seed(42)
+    set_seed(42)
+
+    # model obtained after hyperparameter search
+    regression_head = nn.Sequential(
+        nn.Linear(768, 256, bias=True), nn.BatchNorm1d(256), nn.GELU(),
+        nn.Linear(256, 256, bias=True), nn.BatchNorm1d(256), nn.GELU(),
+        nn.Linear(256, 1024, bias=True), nn.BatchNorm1d(1024), nn.GELU(),
+        nn.Linear(1024,1,bias=True)
+    )
+
+    model = RegressorBERT(model_name=model_name,
+                          freeze_bert=args.freeze,
+                          hidden=args.hidden,
+                          loss_func=loss_name_to_func[args.loss_func],
+                          aggregation_method=args.agg,
+                          regression_head=regression_head,
+                          config=BertConfig.from_pretrained(model_name),
+                          load_finetuned=False,
+                          return_hidden=False
+                          ).to(device)
     
-    # print(model)
-
-    df = pd.read_csv("funda_data_11_06_2024.csv")
+    df = pd.read_csv("data/funda_data_11_06_2024.csv")
     df = df[["descrip", "price"]]
-    dataset = create_dataset(df, args.datasize)
+    dataset = create_dataset(df, args.datasize, tokenizer, 3)
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-    # dataloader = DataLoader(dataset, batch_size=3, shuffle=True, num_workers=2)
 
-    training_args = TrainingArguments(output_dir="regressor_bert", 
-                                    # learning_rate=args.lr, 
+    training_args = TrainingArguments(output_dir="regressor_bert_best", 
                                     num_train_epochs=args.epochs, 
-                                    # weight_decay=args.w_decay, 
                                     eval_strategy="epoch", 
-                                    save_strategy="no", 
-                                    # load_best_model_at_end=True, 
+                                    save_strategy="epoch", 
                                     push_to_hub=False,
                                     remove_unused_columns=True,
-                                    label_names=["price"]
+                                    label_names=["price"],
+                                    report_to="tensorboard",
+                                    per_device_train_batch_size=args.batches,
+                                    per_device_eval_batch_size=args.batches,
+                                    metric_for_best_model="eval_loss",
+                                    bf16=True,
+                                    disable_tqdm=True,
+                                    load_best_model_at_end=True,
+                                    save_total_limit=1
                                     )
 
+    num_training_steps = ceil(len(dataset["train"])/args.batches * args.epochs)
     optimizer = optimizer_name_to_func[args.optimizer](model.parameters(), lr=args.lr, weight_decay=args.w_decay)
     optimizer_scheduler = (optimizer,
-                           get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=args.epochs*args.batches))
-    trainer = Trainer(model=model,
+                        get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=num_training_steps))
+    trainer = customTrainer(model=model,
                     tokenizer=tokenizer,
                     optimizers=optimizer_scheduler,
                     args=training_args,
                     data_collator=data_collator,
                     train_dataset=dataset["train"],
                     eval_dataset=dataset["test"],
-                    #   compute_metrics=compute_metrics
+                    compute_metrics=compute_metrics,
+                    callbacks=[EarlyStoppingCallback(early_stopping_patience=5)]
                     )
-    trainer.train()
-    trainer.save_model()
+
+    final_eval_results = trainer.evaluate(dataset["test"])
     
-    print(test_model(df.iloc[0]["descrip"], df.iloc[0]["price"])  )
+    trainer.train()
+
+    model.save_pretrained("regressor_bert_final")

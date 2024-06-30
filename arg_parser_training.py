@@ -7,7 +7,8 @@ class argParser:
         # BERT instantiation parameters
         self.arg_parser.add_argument("--loss_func", type=str)
         self.arg_parser.add_argument("--agg", type=str)
-        self.arg_parser.add_argument("--freeze", type=bool)
+        self.arg_parser.add_argument("--freeze", type=str)
+        self.arg_parser.add_argument("--regress_size", type=int)
         self.arg_parser.add_argument("--dense", nargs="+", type=lambda x: tuple([int(item) for item in x.split(",")]))
         self.arg_parser.add_argument("--hidden", nargs="+", type=lambda x: int(x))
     
@@ -19,3 +20,5 @@ class argParser:
         self.arg_parser.add_argument("--lr", type=float)
         self.arg_parser.add_argument("--optimizer", type=str)
         self.arg_parser.add_argument("--gpu", type=bool)
+        self.arg_parser.add_argument("--num_trials", type=int)
+        self.arg_parser.add_argument("--study_name", type=str)

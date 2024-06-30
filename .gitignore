@@ -1,4 +1,11 @@
-regressor_bert/
+regressor_bert*/
 funda*
 soup*
 data_exploration.ipynb
+tuner/
+trial_runs/
+regressor_bert_final/
+data/
+*.sqlite3
+*.sql
+*.db
