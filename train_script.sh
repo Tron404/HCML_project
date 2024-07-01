@@ -18,6 +18,6 @@ fi
 
 python bert_training.py \
     --agg "mean" --freeze "all_but_last_1" --hidden -1 -2 \
-    --datasize 100 --batches 10 --gpu true \
+    --datasize 10000 --batches 10 --gpu true \
     --optimizer "adamw" --lr 0.005144591620070551 --w_decay 0.042581857401925625 \
     --epochs 25 --loss_func "rmse"\

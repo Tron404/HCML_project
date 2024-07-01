@@ -1,4 +1,5 @@
 import pandas as pd
+import pickle
 import torch
 
 # import custom modules
@@ -112,3 +113,4 @@ if __name__ == "__main__":
     trainer.train()
 
     model.save_pretrained("regressor_bert_final")
+    pickle.dump(model, open("model.pickle", "wb"))

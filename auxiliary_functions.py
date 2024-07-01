@@ -33,6 +33,7 @@ def tokenize(x: str, tokenizer: PreTrainedTokenizer) -> dict:
 def create_dataset(pandas_df: pd.DataFrame, limit_size: int, tokenizer: PreTrainedTokenizer, z_threhsold: float) -> Dataset:
     # eliminate outliers with z-scores < 3 and scale
     scaler = StandardScaler()
+    pandas_df = pandas_df.dropna()
     pandas_df = pandas_df.iloc[:limit_size]
     prices = pandas_df["price"].to_numpy()
     z_scores = (prices-np.mean(prices))/np.std(prices)

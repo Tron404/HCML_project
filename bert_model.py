@@ -12,7 +12,8 @@ class RegressorBERT(PreTrainedModel):
         super().__init__(config)
 
         if kwargs["load_finetuned"]:
-            self._load_bert(kwargs["model_name"])
+            # self._load_bert(kwargs["model_path"])
+            return
 
         # set up internal attributes
         self.aggregation_method = kwargs["aggregation_method"]
